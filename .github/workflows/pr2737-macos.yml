@@ -1,0 +1,66 @@
+name: PR 2737 focused macOS validation
+
+on:
+  push:
+    branches: [codex/validation-2737-macos-f03e103]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr2737-macos-validation
+  cancel-in-progress: false
+
+jobs:
+  jbig2:
+    name: craft-stream-codecs macOS at f03e103
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out exact product source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: yoriswind/craft-libs
+          ref: f03e103107ec3021f71dfb523cee18c26e555bc1
+          persist-credentials: false
+      - name: Verify execution identity and preinstalled Rust tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = f03e103107ec3021f71dfb523cee18c26e555bc1
+          test "$RUNNER_OS" = macOS
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+          printf 'Product source: `%s`\n\nRunner: `%s` / `%s`\n' "$(git rev-parse HEAD)" "$RUNNER_OS" "$RUNNER_ARCH" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check package formatting
+        run: cargo fmt --package craft-stream-codecs -- --check
+      - name: Strictly lint package and all targets
+        run: cargo clippy --locked -p craft-stream-codecs --all-targets --jobs 2 -- -D warnings
+      - name: Run three exact JBIG2 cases
+        run: |
+          set -euo pipefail
+          cases=(
+            'jbig2::symbols::tests::small_symbol_limits_cover_memory_and_generic_fallback'
+            'jbig2::symbols::tests::too_many_symbols_are_left_to_generic_coding'
+            'jbig2::symbols::tests::what_a_page_has_alone_stays_its_own'
+          )
+          i=0
+          for case in "${cases[@]}"; do
+            i=$((i + 1))
+            log="$RUNNER_TEMP/pr2737-macos-case-$i.log"
+            cargo test --locked -p craft-stream-codecs --lib --jobs 2 "$case" -- --test-threads=1 --exact 2>&1 | tee "$log"
+            grep -Eq 'test result: ok\. 1 passed; 0 failed;' "$log"
+            printf -- '- PASS: `%s` (one selected case)\n' "$case" >> "$GITHUB_STEP_SUMMARY"
+          done
+          test "$i" -eq 3
+      - name: Confirm lockfile and source unchanged
+        run: git diff --exit-code
