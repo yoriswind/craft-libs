@@ -14,7 +14,7 @@ concurrency:
 jobs:
   update:
     name: craft-update macOS at ca3f03c5
-    runs-on: macos-latest
+    runs-on: macos-26-intel
     timeout-minutes: 20
     env:
       CARGO_BUILD_JOBS: '2'
