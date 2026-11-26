@@ -1,0 +1,69 @@
+name: PR 2750 focused macOS validation
+
+on:
+  push:
+    branches: [codex/validation-2750-macos-d58e680]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr2750-macos-validation
+  cancel-in-progress: false
+
+jobs:
+  imap:
+    name: craft-proto macOS at d58e680
+    runs-on: macos-26-intel
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out exact product source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: yoriswind/craft-libs
+          ref: d58e680c8ae8d19de65355cfb3d4243e27d20607
+          persist-credentials: false
+      - name: Verify execution identity and preinstalled Rust tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d58e680c8ae8d19de65355cfb3d4243e27d20607
+          test "$RUNNER_OS" = macOS
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+          printf 'Product source: `%s`\n\nRunner: `%s` / `%s`\n' "$(git rev-parse HEAD)" "$RUNNER_OS" "$RUNNER_ARCH" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check package formatting
+        run: cargo fmt --package craft-proto -- --check
+      - name: Strictly lint package and all targets
+        run: cargo clippy --locked -p craft-proto --all-targets --jobs 2 -- -D warnings
+      - name: Run six exact small-budget IMAP cases
+        run: |
+          set -euo pipefail
+          cases=(
+            'imap::gmail_labels_tests::small_limits_a_mailbox_claimed_huge_cant_fill_memory_with_flags'
+            'imap::gmail_labels_tests::small_limits_a_big_folders_listing_is_not_cut_short_for_its_size'
+            'imap::limits_tests::small_limits_a_flood_of_long_lines_ends_the_command'
+            'imap::limits_tests::small_limits_a_folder_with_more_messages_than_other_commands_may_answer_still_reads'
+            'imap::limits_tests::command_text_budget_counts_exact_bytes'
+            'imap::gmail_labels_tests::flag_and_label_budgets_count_stored_bytes'
+          )
+          i=0
+          for case in "${cases[@]}"; do
+            i=$((i + 1))
+            log="$RUNNER_TEMP/pr2750-macos-case-$i.log"
+            cargo test --locked -p craft-proto --lib --jobs 2 "$case" -- --test-threads=1 --exact 2>&1 | tee "$log"
+            grep -Eq 'test result: ok\. 1 passed; 0 failed;' "$log"
+            printf -- '- PASS: `%s` (one selected case)\n' "$case" >> "$GITHUB_STEP_SUMMARY"
+          done
+          test "$i" -eq 6
+      - name: Confirm lockfile and source unchanged
+        run: git diff --exit-code
