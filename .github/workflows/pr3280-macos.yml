@@ -1,0 +1,85 @@
+name: PR 3280 focused macOS validation
+
+on:
+  push:
+    branches: [codex/validation-3280-macos-ca3f03c5]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr3280-macos-validation
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: craft-update macOS at ca3f03c5
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/.test-inputs/craft-fonts
+      CRAFT_FONTS_REQUIRED: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the exact product source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: yoriswind/craft-libs
+          ref: ca3f03c5d8004608526277772df2f218f74a46cd
+          persist-credentials: false
+      - name: Check out the existing Workspace font pin
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: .test-inputs/craft-fonts
+          persist-credentials: false
+      - name: Verify execution identity and preinstalled Rust tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = ca3f03c5d8004608526277772df2f218f74a46cd
+          test "$(git -C .test-inputs/craft-fonts rev-parse HEAD)" = b076417b5880bd4154bd22f00695b1d28c6bea83
+          test "$RUNNER_OS" = macOS
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+          printf 'Product source: `%s`\n\nRunner: `%s` / `%s`\n' "$(git rev-parse HEAD)" "$RUNNER_OS" "$RUNNER_ARCH" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check package formatting
+        run: cargo fmt --package craft-update -- --check
+      - name: Compile and strictly lint default, UI and screen-testing targets
+        run: |
+          set -euo pipefail
+          cargo clippy --no-deps --locked -p craft-update --all-targets --jobs 2 -- -D warnings
+          cargo clippy --no-deps --locked -p craft-update --features ui --all-targets --jobs 2 -- -D warnings
+          cargo clippy --no-deps --locked -p craft-update --features screen-testing --all-targets --jobs 2 -- -D warnings
+      - name: Run ten exact registered error and macOS cases
+        run: |
+          set -euo pipefail
+          cases=(
+            'translate::tests::reloaded_compound_failures_translate_authored_frames_and_keep_data_opaque'
+            'http::tests::a_rate_limited_release_check_is_typed_not_english_text'
+            'http::tests::the_remote_agents_refuse_plain_http_before_connecting'
+            'http::tests::https_only_still_reaches_a_loopback_link'
+            'integration::update::the_update_dialogs_show_the_icon_the_app_gives_its_host'
+            'integration::update::translatable_update_errors_are_rendered_by_the_check_dialog'
+            'install::tests::install_reasons_keep_authored_context_and_external_data'
+            'self_update::tests::restart_reasons_remain_structured_until_start'
+            'install::tests::macos_checks::real_refusals_are_answers_from_codesign'
+            'install::tests::macos_checks::a_job_canceled_while_it_waits_for_the_signature_check_stops_there'
+          )
+          i=0
+          for case in "${cases[@]}"; do
+            i=$((i + 1))
+            log="$RUNNER_TEMP/pr3280-macos-case-$i.log"
+            cargo test --locked -p craft-update --features screen-testing --lib --jobs 2 "$case" -- --test-threads=1 --exact 2>&1 | tee "$log"
+            grep -Eq 'test result: ok\. 1 passed; 0 failed;' "$log"
+            printf -- '- PASS: `%s` (one selected case)\n' "$case" >> "$GITHUB_STEP_SUMMARY"
+          done
+          test "$i" -eq 10
