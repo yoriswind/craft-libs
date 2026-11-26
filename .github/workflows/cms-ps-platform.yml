@@ -1,0 +1,95 @@
+name: CMS and PostScript focused platform validation
+
+on:
+  push:
+    branches: [codex/validation-3113-2981-platform-20261126]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cms-ps-platform-20261126
+  cancel-in-progress: false
+
+jobs:
+  focused:
+    name: ${{ matrix.package }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [windows-latest, macos-26-intel]
+        package: [craft-cms, craft-ps]
+        include:
+          - package: craft-cms
+            baseline: 39c7c75c52aca67716e5b4bb46dd1196ae1943cc
+            product: 90932ce113cc9d67da34fc180823ca42fe13a946
+            case: synth::tests::oklab_profile_has_three_tables
+          - package: craft-ps
+            baseline: 39c7c75c52aca67716e5b4bb46dd1196ae1943cc
+            product: 2bef7cd57f737e4b6cf3fa7f275d7d0e7fa49bc5
+            case: write::tests::numbers_match_base_formatter
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: never
+      CRAFT_HOSTILE_DIVISOR: '8'
+      PROPTEST_CASES: '64'
+      PACKAGE: ${{ matrix.package }}
+      CASE: ${{ matrix.case }}
+      BASELINE: ${{ matrix.baseline }}
+      PRODUCT: ${{ matrix.product }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the exact baseline
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: yoriswind/craft-libs
+          ref: ${{ matrix.baseline }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify baseline identity and record preinstalled toolchain
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASELINE"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          rustc --version --verbose
+          cargo --version
+          printf 'Runner: `%s` / `%s`\n\nPackage: `%s`\n\nBaseline: `%s`\n\nProduct: `%s`\n\n' "$RUNNER_OS" "$RUNNER_ARCH" "$PACKAGE" "$BASELINE" "$PRODUCT" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run one exact baseline case
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/fixture-baseline.log"
+          cargo test --locked --config .config/cargo-dev.toml --config .config/cargo-ci.toml -p "$PACKAGE" --all-features --lib --jobs 2 "$CASE" -- --exact --test-threads=1 2>&1 | tee "$log"
+          grep -F "test $CASE ... ok" "$log"
+          grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$log"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          printf '\nBaseline `%s`:\n\n```text\n' "$BASELINE" >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^test result:' "$log" >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n' >> "$GITHUB_STEP_SUMMARY"
+      - name: Check out the exact product source
+        uses: actions/checkout@v7.0.1
+        with:
+          repository: yoriswind/craft-libs
+          ref: ${{ matrix.product }}
+          fetch-depth: 1
+          clean: false
+          persist-credentials: false
+      - name: Run one exact product case with the same build settings
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          log="$RUNNER_TEMP/fixture-product.log"
+          cargo test --locked --config .config/cargo-dev.toml --config .config/cargo-ci.toml -p "$PACKAGE" --all-features --lib --jobs 2 "$CASE" -- --exact --test-threads=1 2>&1 | tee "$log"
+          grep -F "test $CASE ... ok" "$log"
+          grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$log"
+          test "$(git rev-parse HEAD)" = "$PRODUCT"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          printf '\nProduct `%s`:\n\n```text\n' "$PRODUCT" >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^test result:' "$log" >> "$GITHUB_STEP_SUMMARY"
+          printf '```\n\nSingle package-scoped samples on the same runner, using the Workspace dev/CI Cargo overrides. Cargo test timings exclude compilation. These are not the full Workspace feature union, a repeated benchmark, or the PR required CI gate.\n' >> "$GITHUB_STEP_SUMMARY"
