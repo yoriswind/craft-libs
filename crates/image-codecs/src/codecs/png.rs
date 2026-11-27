@@ -2386,7 +2386,6 @@ mod conversion_tests {
             assert_eq!(source, before);
         }
     }
-
 }
 
 #[cfg(test)]
