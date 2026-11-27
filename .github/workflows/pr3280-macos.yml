@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   update:
-    name: craft-update macOS at ca3f03c5
+    name: craft-update macOS at 34c1b676
     runs-on: macos-26-intel
     timeout-minutes: 20
     env:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: yoriswind/craft-libs
-          ref: ca3f03c5d8004608526277772df2f218f74a46cd
+          ref: 34c1b6767212484f17bc6f18de4e1be65a2d51c3
           persist-credentials: false
       - name: Check out the existing Workspace font pin
         uses: actions/checkout@v7.0.1
@@ -43,7 +43,7 @@ jobs:
       - name: Verify execution identity and preinstalled Rust tools
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = ca3f03c5d8004608526277772df2f218f74a46cd
+          test "$(git rev-parse HEAD)" = 34c1b6767212484f17bc6f18de4e1be65a2d51c3
           test "$(git -C .test-inputs/craft-fonts rev-parse HEAD)" = b076417b5880bd4154bd22f00695b1d28c6bea83
           test "$RUNNER_OS" = macOS
           rustc --version
@@ -59,7 +59,7 @@ jobs:
           cargo clippy --no-deps --locked -p craft-update --all-targets --jobs 2 -- -D warnings
           cargo clippy --no-deps --locked -p craft-update --features ui --all-targets --jobs 2 -- -D warnings
           cargo clippy --no-deps --locked -p craft-update --features screen-testing --all-targets --jobs 2 -- -D warnings
-      - name: Run ten exact registered error and macOS cases
+      - name: Run eighteen exact registered error and macOS cases
         run: |
           set -euo pipefail
           cases=(
@@ -73,6 +73,14 @@ jobs:
             'self_update::tests::restart_reasons_remain_structured_until_start'
             'install::tests::macos_checks::real_refusals_are_answers_from_codesign'
             'install::tests::macos_checks::a_job_canceled_while_it_waits_for_the_signature_check_stops_there'
+            'install::macos::detach_stderr_reaches_the_busy_retry_policy'
+            'install::tests::a_busy_detach_retries_and_stops_as_soon_as_it_succeeds'
+            'install::tests::a_detach_that_stays_busy_returns_its_last_error_after_bounded_retries'
+            'install::tests::a_slow_busy_detach_spends_the_retry_window_without_another_attempt'
+            'install::tests::a_detach_success_or_nonbusy_failure_never_waits_or_retries'
+            'install::tests::macos_checks::only_mount_points_of_installs_that_ended_are_cleared'
+            'install::tests::macos_checks::an_ended_mount_is_removed_after_a_busy_detach_succeeds'
+            'install::tests::macos_checks::a_mount_that_stays_busy_is_left_after_bounded_cleanup'
           )
           i=0
           for case in "${cases[@]}"; do
@@ -82,4 +90,4 @@ jobs:
             grep -Eq 'test result: ok\. 1 passed; 0 failed;' "$log"
             printf -- '- PASS: `%s` (one selected case)\n' "$case" >> "$GITHUB_STEP_SUMMARY"
           done
-          test "$i" -eq 10
+          test "$i" -eq 18
