@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   update:
-    name: craft-update macOS at 42817752
+    name: craft-update macOS at 118b53af
     runs-on: macos-26-intel
     timeout-minutes: 20
     env:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           repository: yoriswind/craft-libs
-          ref: 428177528ca5519e231f59fa4b54cd985b03a76c
+          ref: 118b53afd902e506071122adab5f4ef89e3023ca
           persist-credentials: false
       - name: Check out the existing Workspace font pin
         uses: actions/checkout@v7.0.1
@@ -43,7 +43,7 @@ jobs:
       - name: Verify execution identity and preinstalled Rust tools
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 428177528ca5519e231f59fa4b54cd985b03a76c
+          test "$(git rev-parse HEAD)" = 118b53afd902e506071122adab5f4ef89e3023ca
           test "$(git -C .test-inputs/craft-fonts rev-parse HEAD)" = b076417b5880bd4154bd22f00695b1d28c6bea83
           test "$RUNNER_OS" = macOS
           rustc --version
