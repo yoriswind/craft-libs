@@ -1212,27 +1212,32 @@ impl Write for FallibleOutput<'_> {
     }
 }
 
+/// Encodes the planned PNG, reusing owned converted pixels for the endian step.
 pub(crate) fn encode(src: &Image, plan: Plan, opts: &EncodeOptions) -> Result<Vec<u8>, CodecError> {
     let img = src.converted(plan.layout, plan.sample);
     let (w, h) = img.dimensions();
-    // Big-endian sample bytes.
-    let mut data = std::borrow::Cow::Borrowed(img.data());
-    if img.sample_type() == SampleType::U16 {
-        to_big_endian(data.to_mut());
+    let (layout, sample) = (img.layout(), img.sample_type());
+    let bpp = layout.channels() * sample.bytes();
+    let mut out = Vec::new();
+    {
+        let mut output = FallibleOutput(&mut out);
+        let writer = start(&mut output, (w, h), (layout, sample), img.icc.as_ref(), img.cicp, &img.meta, opts)?;
+        // Header and metadata are written before the converted image is consumed.
+        let mut data = png_pixels(img);
+        if sample == SampleType::U16 {
+            to_big_endian(data.to_mut());
+        }
+        write_data(writer, &data, (w, h), bpp, opts)?;
     }
-    encode_data(
-        RawPng {
-            width: w,
-            height: h,
-            layout: img.layout(),
-            sample: img.sample_type(),
-            icc: img.icc.as_ref(),
-            cicp: img.cicp,
-            meta: &img.meta,
-            data: &data,
-        },
-        opts,
-    )
+    Ok(out)
+}
+
+/// Moves owned converted storage; a caller's unchanged image stays borrowed until endian swapping.
+fn png_pixels(img: std::borrow::Cow<'_, Image>) -> std::borrow::Cow<'_, [u8]> {
+    match img {
+        std::borrow::Cow::Borrowed(image) => std::borrow::Cow::Borrowed(image.data()),
+        std::borrow::Cow::Owned(image) => std::borrow::Cow::Owned(image.into_data()),
+    }
 }
 
 struct RawPng<'a> {
@@ -1252,18 +1257,23 @@ fn encode_data(raw: RawPng<'_>, opts: &EncodeOptions) -> Result<Vec<u8>, CodecEr
     let mut out = Vec::new();
     {
         let mut output = FallibleOutput(&mut out);
-        let mut writer = start(&mut output, (w, h), (layout, sample), icc, cicp, meta, opts)?;
-        if opts.png_interlaced {
-            let idat = adam7_idat(data, w as usize, h as usize, bpp, opts.png_compression)?;
-            write_idat(&mut writer, &idat, MAX_IDAT)?;
-        } else if let Some(idat) = parallel_idat(data, w as usize, h as usize, bpp, opts.png_compression) {
-            write_idat(&mut writer, &idat, MAX_IDAT)?;
-        } else {
-            writer.write_image_data(data).map_err(|e| CodecError::encode(F, e))?;
-        }
-        writer.finish().map_err(|e| CodecError::encode(F, e))?;
+        let writer = start(&mut output, (w, h), (layout, sample), icc, cicp, meta, opts)?;
+        write_data(writer, data, (w, h), bpp, opts)?;
     }
     Ok(out)
+}
+
+/// The shared data/finish path, after either entry point has written its existing header.
+fn write_data<W: Write>(mut writer: png::Writer<W>, data: &[u8], (w, h): (u32, u32), bpp: usize, opts: &EncodeOptions) -> Result<(), CodecError> {
+    if opts.png_interlaced {
+        let idat = adam7_idat(data, w as usize, h as usize, bpp, opts.png_compression)?;
+        write_idat(&mut writer, &idat, MAX_IDAT)?;
+    } else if let Some(idat) = parallel_idat(data, w as usize, h as usize, bpp, opts.png_compression) {
+        write_idat(&mut writer, &idat, MAX_IDAT)?;
+    } else {
+        writer.write_image_data(data).map_err(|e| CodecError::encode(F, e))?;
+    }
+    writer.finish().map_err(|e| CodecError::encode(F, e))
 }
 
 /// Encodes interleaved 8-bit RGBA pixels, row-major with no row padding, as a PNG without
@@ -2300,6 +2310,83 @@ mod parallel_tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+
+    /// Converting for export must give the same file as borrowed U16 pixels, without
+    /// changing the caller's native samples or losing the converted image's metadata.
+    #[test]
+    fn converted_u16_matches_borrowed_pixels_and_metadata() {
+        for layout in [ChannelLayout::Gray, ChannelLayout::GrayA, ChannelLayout::Rgb, ChannelLayout::Rgba] {
+            for sample in [SampleType::F16, SampleType::F32] {
+                let raw = (0..3 * 2 * layout.channels())
+                    .flat_map(|i| match sample {
+                        SampleType::F16 => [0u16, 0x8000, 0x3800, 0x3c00, 0xbc00, 0x7c00, 0x7e01][i % 7].to_ne_bytes().to_vec(),
+                        _ => [0.0f32, -0.0, 0.5, 1.0, -1.0, f32::INFINITY, f32::NAN][i % 7].to_ne_bytes().to_vec(),
+                    })
+                    .collect();
+                let mut img = Image::from_raw(3, 2, layout, sample, raw).unwrap();
+                img.icc = Some((0..600u32).map(|i| (i % 251) as u8).collect());
+                img.meta.dpi = Some((300.0, 144.0));
+                img.meta.text.push(("Title".into(), "Converted PNG".into()));
+                img.meta.xmp = Some("<x:xmpmeta>PNG metadata</x:xmpmeta>".into());
+                let before = img.clone();
+                let converted = img.convert(layout, SampleType::U16);
+                for png_interlaced in [false, true] {
+                    for png_compression in [PngCompression::None, PngCompression::Default] {
+                        let opts = EncodeOptions { png_interlaced, png_compression, ..Default::default() };
+                        let bytes = crate::encode(&img, F, &opts).unwrap();
+                        assert_eq!(bytes, crate::encode(&converted, F, &opts).unwrap());
+                        let decoded = decode(&bytes, &Limits::default()).unwrap();
+                        assert_eq!(decoded.data(), converted.data());
+                        assert_eq!(decoded.icc, img.icc);
+                        assert!(decoded.meta.text.contains(&("Title".into(), "Converted PNG".into())));
+                        assert_eq!(img, before);
+                    }
+                }
+            }
+        }
+    }
+    /// A revert to copying the converted data changes this address even if every PNG byte is equal.
+    #[test]
+    fn converted_u16_pixel_storage_is_handed_off_without_a_copy() {
+        for layout in [ChannelLayout::Gray, ChannelLayout::GrayA, ChannelLayout::Rgb, ChannelLayout::Rgba] {
+            for sample in [SampleType::F16, SampleType::F32] {
+                let source = Image::new(3, 2, layout, sample).unwrap();
+                let converted = source.converted(layout, SampleType::U16);
+                assert!(matches!(converted, std::borrow::Cow::Owned(_)));
+                let at = converted.data().as_ptr();
+                let mut data = png_pixels(converted);
+                assert!(matches!(data, std::borrow::Cow::Owned(_)));
+                assert_eq!(data.as_ptr(), at, "the converted allocation is moved, not cloned");
+                to_big_endian(data.to_mut());
+                assert_eq!(data.as_ptr(), at, "endian conversion keeps the same allocation");
+            }
+        }
+    }
+
+    /// Borrowed U16 pixels still copy before byte swapping, leaving the caller's native bytes intact.
+    #[test]
+    fn borrowed_u16_pixel_storage_is_copied_only_for_endian_swapping() {
+        for layout in [ChannelLayout::Gray, ChannelLayout::GrayA, ChannelLayout::Rgb, ChannelLayout::Rgba] {
+            let raw = (0..3 * 2 * layout.channels()).flat_map(|i| (0x1234u16 + i as u16).to_ne_bytes()).collect();
+            let source = Image::from_raw(3, 2, layout, SampleType::U16, raw).unwrap();
+            let before = source.clone();
+            let converted = source.converted(layout, SampleType::U16);
+            assert!(matches!(converted, std::borrow::Cow::Borrowed(_)));
+            let mut data = png_pixels(converted);
+            assert!(matches!(data, std::borrow::Cow::Borrowed(_)));
+            assert_eq!(data.as_ptr(), source.data().as_ptr());
+            to_big_endian(data.to_mut());
+            assert!(matches!(data, std::borrow::Cow::Owned(_)));
+            assert_ne!(data.as_ptr(), source.data().as_ptr());
+            assert_eq!(source, before);
+        }
+    }
+
 }
 
 #[cfg(test)]
