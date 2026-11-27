@@ -810,6 +810,14 @@ fn fuzz_decode_options() -> DecodeOptions {
 }
 
 fn poke(bytes: &[u8]) {
+    let started = std::time::Instant::now();
+    poke_all(bytes);
+    if started.elapsed() > std::time::Duration::from_millis(100) {
+        eprintln!("DIAG tiff poke slow: {} bytes, {:?}", bytes.len(), started.elapsed());
+    }
+}
+
+fn poke_all(bytes: &[u8]) {
     let opts = fuzz_decode_options();
     let _ = decode_with(bytes, &opts);
     let _ = exif_orientation(bytes);
@@ -839,7 +847,11 @@ fn zoo_decodes_and_never_panics_when_cut_or_corrupted() {
             poke(&f[..cut]);
         }
         for i in (0..f.len()).filter(|i| (i + k) % step == 0) {
-            for flip in [0xffu8, 0x80, 0x01] {
+            // nightly flips each byte three ways; the gate one way per byte, rotating, so the sampled bytes together see all
+            let flips = [0xffu8, 0x80, 0x01];
+            let one = [flips[(i / step) % 3]];
+            for flip in if step == 1 { &flips[..] } else { &one[..] } {
+                let flip = *flip;
                 let mut g = f.clone();
                 g[i] ^= flip;
                 poke(&g);
